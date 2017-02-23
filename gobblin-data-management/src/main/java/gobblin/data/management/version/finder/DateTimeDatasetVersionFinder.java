@@ -1,20 +1,26 @@
 /*
-* Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-* this file except in compliance with the License. You may obtain a copy of the
-* License at  http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software distributed
-* under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-* CONDITIONS OF ANY KIND, either express or implied.
-*/
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 package gobblin.data.management.version.finder;
 
 import java.util.Properties;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.joda.time.DateTimeZone;
@@ -28,6 +34,7 @@ import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 
 import gobblin.configuration.ConfigurationKeys;
+import gobblin.data.management.version.FileStatusTimestampedDatasetVersion;
 import gobblin.data.management.version.FileSystemDatasetVersion;
 import gobblin.data.management.version.TimestampedDatasetVersion;
 
@@ -37,7 +44,7 @@ import gobblin.data.management.version.TimestampedDatasetVersion;
  * Uses a datetime pattern to find dataset versions from the dataset path
  * and parse the {@link org.joda.time.DateTime} representing the version.
  */
-public class DateTimeDatasetVersionFinder extends DatasetVersionFinder<TimestampedDatasetVersion> {
+public class DateTimeDatasetVersionFinder extends AbstractDatasetVersionFinder<TimestampedDatasetVersion> {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(DateTimeDatasetVersionFinder.class);
 
@@ -111,18 +118,22 @@ public class DateTimeDatasetVersionFinder extends DatasetVersionFinder<Timestamp
    * Parse {@link org.joda.time.DateTime} from {@link org.apache.hadoop.fs.Path} using datetime pattern.
    */
   @Override
-  public TimestampedDatasetVersion getDatasetVersion(Path pathRelativeToDatasetRoot, Path fullPath) {
+  public TimestampedDatasetVersion getDatasetVersion(Path pathRelativeToDatasetRoot, FileStatus versionFileStatus) {
+
+    String dateTimeString = null;
     try {
       // pathRelativeToDatasetRoot can be daily/2016/03/02 or 2016/03/02. In either case we need to pick 2016/03/02 as version
-      String dateTimeString =
+      dateTimeString =
           StringUtils.substring(pathRelativeToDatasetRoot.toString(), pathRelativeToDatasetRoot.toString().length()
               - this.datePartitionPattern.length());
 
-      return new TimestampedDatasetVersion(this.formatter.parseDateTime(dateTimeString), fullPath);
+      return new FileStatusTimestampedDatasetVersion(this.formatter.parseDateTime(dateTimeString), versionFileStatus);
 
     } catch (IllegalArgumentException exception) {
-      LOGGER.warn("Candidate dataset version at " + pathRelativeToDatasetRoot
-          + " does not match expected pattern. Ignoring.");
+      LOGGER.warn(String.format(
+          "Candidate dataset version with pathRelativeToDatasetRoot: %s has inferred dataTimeString:%s. "
+              + "It does not match expected datetime pattern %s. Ignoring.", pathRelativeToDatasetRoot, dateTimeString,
+          this.datePartitionPattern));
       return null;
     }
   }

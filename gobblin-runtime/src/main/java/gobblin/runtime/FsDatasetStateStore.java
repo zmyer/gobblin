@@ -1,21 +1,32 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package gobblin.runtime;
 
+import com.typesafe.config.Config;
+import com.typesafe.config.ConfigValue;
+import gobblin.metastore.DatasetStateStore;
+import gobblin.util.ConfigUtils;
 import java.io.IOException;
+import java.net.URI;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -52,13 +63,33 @@ import gobblin.metastore.FsStateStore;
  *
  * @author Yinan Li
  */
-public class FsDatasetStateStore extends FsStateStore<JobState.DatasetState> {
+public class FsDatasetStateStore extends FsStateStore<JobState.DatasetState>
+    implements DatasetStateStore<JobState.DatasetState> {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(FsDatasetStateStore.class);
 
-  public static final String DATASET_STATE_STORE_TABLE_SUFFIX = ".jst";
+  protected static DatasetStateStore<JobState.DatasetState> createStateStore(Config config, String className) {
+    // Add all job configuration properties so they are picked up by Hadoop
+    Configuration conf = new Configuration();
+    for (Map.Entry<String, ConfigValue> entry : config.entrySet()) {
+      conf.set(entry.getKey(), entry.getValue().unwrapped().toString());
+    }
 
-  public static final String CURRENT_DATASET_STATE_FILE_SUFFIX = "current";
+    try {
+      String stateStoreFsUri = ConfigUtils.getString(config, ConfigurationKeys.STATE_STORE_FS_URI_KEY,
+          ConfigurationKeys.LOCAL_FS_URI);
+      FileSystem stateStoreFs = FileSystem.get(URI.create(stateStoreFsUri), conf);
+      String stateStoreRootDir = config.getString(ConfigurationKeys.STATE_STORE_ROOT_DIR_KEY);
+
+      return (DatasetStateStore<JobState.DatasetState>) Class.forName(className)
+          .getConstructor(FileSystem.class, String.class)
+          .newInstance(stateStoreFs, stateStoreRootDir);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    } catch (ReflectiveOperationException e) {
+      throw new RuntimeException("Failed to instantiate " + className, e);
+    }
+  }
 
   public FsDatasetStateStore(String fsUri, String storeRootDir) throws IOException {
     super(fsUri, storeRootDir, JobState.DatasetState.class);

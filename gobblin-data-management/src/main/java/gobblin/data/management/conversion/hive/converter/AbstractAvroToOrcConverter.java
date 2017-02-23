@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package gobblin.data.management.conversion.hive.converter;
 
@@ -78,12 +83,20 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
    */
   private static final String PUBLISHED_TABLE_SUBDIRECTORY = "final";
 
+  private static final String ORC_FORMAT = "orc";
+
   /**
    * Hive runtime property key names for tracking
    */
   private static final String GOBBLIN_DATASET_URN_KEY = "gobblin.datasetUrn";
   private static final String GOBBLIN_PARTITION_NAME_KEY = "gobblin.partitionName";
   private static final String GOBBLIN_WORKUNIT_CREATE_TIME_KEY = "gobblin.workunitCreateTime";
+
+  /***
+   * Separators used by Hive
+   */
+  private static final String HIVE_PARTITIONS_INFO = "/";
+  private static final String HIVE_PARTITIONS_TYPE = ":";
 
   protected final FileSystem fs;
 
@@ -186,6 +199,12 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
     Optional<Table> destinationTableMeta = destinationMeta.getLeft();
 
     // Optional
+    // wrapperViewName          : If specified view with 'wrapperViewName' is created if not already exists
+    //                            over destination table
+    // isUpdateViewAlwaysEnabled: If false 'wrapperViewName' is only updated when schema evolves; if true
+    //                            'wrapperViewName' is always updated (everytime publish happens)
+    Optional<String> wrapperViewName = getConversionConfig().getDestinationViewName();
+    boolean shouldUpdateView = getConversionConfig().isUpdateViewAlwaysEnabled();
     Optional<List<String>> clusterBy =
         getConversionConfig().getClusterBy().isEmpty()
             ? Optional.<List<String>> absent()
@@ -375,6 +394,9 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
     log.debug("Evolve final table DDLs: " + evolutionDDLs);
     EventWorkunitUtils.setEvolutionMetadata(workUnit, evolutionDDLs);
 
+    // View (if present) must be updated if evolution happens
+    shouldUpdateView |= evolutionDDLs.size() > 0;
+
     publishQueries.addAll(evolutionDDLs);
 
 
@@ -420,7 +442,7 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
       publishDirectories.put(orcStagingDataPartitionLocation, orcFinalDataPartitionLocation);
 
       // Step:
-      // A.2.3.3, B.2.3.3: Create partition with location
+      // A.2.3.3, B.2.3.3: Create partition with location (and update storage format if not in ORC already)
       String orcDataPartitionLocation = orcDataLocation + Path.SEPARATOR + orcStagingDataPartitionDirName;
       List<String> createFinalPartitionDDL =
           HiveAvroORCQueryGenerator.generateCreatePartitionDDL(orcTableDatabase,
@@ -430,6 +452,16 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
 
       log.debug("Create final partition DDL: " + createFinalPartitionDDL);
       publishQueries.addAll(createFinalPartitionDDL);
+
+      // Updating storage format non-transactionally is a stop gap measure until Hive supports transactionally update
+      // .. storage format in ADD PARITTION command (today it only supports specifying location)
+      List<String> updatePartitionStorageFormatDDL =
+          HiveAvroORCQueryGenerator.generateAlterTableOrPartitionStorageFormatDDL(orcTableDatabase,
+              orcTableName,
+              Optional.of(partitionsDMLInfo),
+              ORC_FORMAT);
+      log.debug("Update final partition storage format to ORC (if not already in ORC)");
+      publishQueries.addAll(updatePartitionStorageFormatDDL);
 
       // Step:
       // A.2.3.4, B.2.3.4: Drop this staging table and delete directories
@@ -451,6 +483,18 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
     publishQueries.addAll(HiveAvroORCQueryGenerator.generateDropPartitionsDDL(orcTableDatabase,
         orcTableName,
         getDropPartitionsDDLInfo(conversionEntity)));
+
+    /*
+     * Create or update view over the ORC table if specified in the config (ie. wrapper view name is present in config)
+     */
+    if (wrapperViewName.isPresent()) {
+      String viewName = wrapperViewName.get();
+      List<String> createOrUpdateViewDDLs = HiveAvroORCQueryGenerator.generateCreateOrUpdateViewDDL(orcTableDatabase,
+          orcTableName, orcTableDatabase, viewName, shouldUpdateView);
+      log.debug("Create or update View DDLs: " + createOrUpdateViewDDLs);
+      publishQueries.addAll(createOrUpdateViewDDLs);
+
+    }
 
     HiveAvroORCQueryGenerator.serializePublishCommands(workUnit, publishEntity);
     log.debug("Publish partition entity: " + publishEntity);
@@ -581,8 +625,11 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
       if (StringUtils.isBlank(partitionsInfoString) || StringUtils.isBlank(partitionsTypeString)) {
         throw new IllegalArgumentException("Both partitions info and partitions must be present, if one is specified");
       }
-      List<String> pInfo = Splitter.on(",").omitEmptyStrings().trimResults().splitToList(partitionsInfoString);
-      List<String> pType = Splitter.on(",").omitEmptyStrings().trimResults().splitToList(partitionsTypeString);
+      List<String> pInfo = Splitter.on(HIVE_PARTITIONS_INFO).omitEmptyStrings().trimResults().splitToList(partitionsInfoString);
+      List<String> pType = Splitter.on(HIVE_PARTITIONS_TYPE).omitEmptyStrings().trimResults().splitToList(partitionsTypeString);
+      log.debug("PartitionsInfoString: " + partitionsInfoString);
+      log.debug("PartitionsTypeString: " + partitionsTypeString);
+
       if (pInfo.size() != pType.size()) {
         throw new IllegalArgumentException("partitions info and partitions type list should of same size");
       }

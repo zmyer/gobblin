@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package gobblin.data.management.copy.predicates;
@@ -30,6 +35,7 @@ import gobblin.data.management.copy.CopyConfiguration;
 import gobblin.data.management.copy.CopyContext;
 import gobblin.data.management.copy.hive.HiveCopyEntityHelper;
 import gobblin.data.management.copy.hive.HiveDataset;
+import gobblin.data.management.copy.hive.HivePartitionFileSet;
 
 
 public class RegistrationTimeSkipPredicateTest {
@@ -58,7 +64,7 @@ public class RegistrationTimeSkipPredicateTest {
     RegistrationTimeSkipPredicate predicate = new RegistrationTimeSkipPredicate(helper);
 
     // partition exists, but registration time before modtime => don't skip
-    HiveCopyEntityHelper.PartitionCopy pc = createPartitionCopy(partition1Path, modTime - 1, true);
+    HivePartitionFileSet pc = createPartitionCopy(partition1Path, modTime - 1, true);
     Assert.assertFalse(predicate.apply(pc));
 
     // partition exists, registration time equal modtime => don't skip
@@ -80,9 +86,9 @@ public class RegistrationTimeSkipPredicateTest {
 
   }
 
-  public HiveCopyEntityHelper.PartitionCopy createPartitionCopy(Path location, long registrationGenerationTime,
+  public HivePartitionFileSet createPartitionCopy(Path location, long registrationGenerationTime,
       boolean targetPartitionExists) {
-    HiveCopyEntityHelper.PartitionCopy partitionCopy = Mockito.mock(HiveCopyEntityHelper.PartitionCopy.class);
+    HivePartitionFileSet partitionCopy = Mockito.mock(HivePartitionFileSet.class);
 
     Partition partition = Mockito.mock(Partition.class);
     Mockito.doReturn(location).when(partition).getDataLocation();

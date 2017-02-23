@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package gobblin.data.management.conversion.hive.util;
@@ -144,9 +149,8 @@ public class HiveAvroORCQueryGeneratorTest {
         .generateCreateTableDDL(flattenedSchema, schemaName, "file:/user/hive/warehouse/" + schemaName,
             Optional.<String>absent(), Optional.<Map<String, String>>absent(), Optional.<List<String>>absent(),
             Optional.<Map<String, HiveAvroORCQueryGenerator.COLUMN_SORT_ORDER>>absent(), Optional.<Integer>absent(),
-            Optional.<String>absent(), Optional.<String>absent(), Optional.<String>absent(),
-            null, isEvolutionEnabled, destinationTableMeta,
-            new HashMap<String, String>());
+            Optional.<String>absent(), Optional.<String>absent(), Optional.<String>absent(), null, isEvolutionEnabled,
+            destinationTableMeta, new HashMap<String, String>());
 
     Assert.assertEquals(q,
         ConversionHiveTestUtils.readQueryFromFile(resourceDir, "recordWithinRecordWithinRecord_flattened.ddl"));
@@ -175,6 +179,54 @@ public class HiveAvroORCQueryGeneratorTest {
   }
 
   /***
+   * Test Multi-partition DDL generation
+   * @throws IOException
+   */
+  @Test
+  public void testMultiPartitionDDL() throws IOException {
+    String schemaName = "testMultiPartitionDDL";
+    Schema schema = ConversionHiveTestUtils.readSchemaFromJsonFile(resourceDir, "recordWithinRecordWithinRecord_nested.json");
+
+    AvroFlattener avroFlattener = new AvroFlattener();
+    Schema flattenedSchema = avroFlattener.flatten(schema, true);
+
+    Map<String, String> partitionDDLInfo = ImmutableMap.of("datepartition", "string", "id", "int", "country", "string");
+
+    String q = HiveAvroORCQueryGenerator
+        .generateCreateTableDDL(flattenedSchema, schemaName, "file:/user/hive/warehouse/" + schemaName,
+            Optional.<String>absent(), Optional.of(partitionDDLInfo), Optional.<List<String>>absent(),
+            Optional.<Map<String, HiveAvroORCQueryGenerator.COLUMN_SORT_ORDER>>absent(), Optional.<Integer>absent(),
+            Optional.<String>absent(), Optional.<String>absent(), Optional.<String>absent(), null, isEvolutionEnabled,
+            destinationTableMeta, new HashMap<String, String>());
+
+    Assert.assertEquals(q,
+        ConversionHiveTestUtils.readQueryFromFile(resourceDir, "testMultiPartition.ddl"));
+  }
+
+  /***
+   * Test Multi-partition DML generation
+   * @throws IOException
+   */
+  @Test
+  public void testMultiPartitionDML() throws IOException {
+    String schemaName = "testMultiPartitionDML";
+    Schema schema = ConversionHiveTestUtils.readSchemaFromJsonFile(resourceDir,
+        "recordWithinRecordWithinRecord_nested.json");
+
+    AvroFlattener avroFlattener = new AvroFlattener();
+    Schema flattenedSchema = avroFlattener.flatten(schema, true);
+
+    Map<String, String> partitionDMLInfo = ImmutableMap.of("datepartition", "2016-01-01", "id", "101", "country", "US");
+
+    String q = HiveAvroORCQueryGenerator
+        .generateTableMappingDML(schema, flattenedSchema, schemaName, schemaName + "_orc", Optional.<String>absent(),
+            Optional.<String>absent(), Optional.of(partitionDMLInfo), Optional.<Boolean>absent(),
+            Optional.<Boolean>absent(), isEvolutionEnabled, destinationTableMeta, rowLimit);
+
+    Assert.assertEquals(q.trim(), ConversionHiveTestUtils.readQueryFromFile(resourceDir, "testMultiPartition.dml"));
+  }
+
+  /***
    * Test bad schema
    * @throws IOException
    */
@@ -187,9 +239,8 @@ public class HiveAvroORCQueryGeneratorTest {
         .generateCreateTableDDL(schema, schemaName, "file:/user/hive/warehouse/" + schemaName,
             Optional.<String>absent(), Optional.<Map<String, String>>absent(), Optional.<List<String>>absent(),
             Optional.<Map<String, HiveAvroORCQueryGenerator.COLUMN_SORT_ORDER>>absent(), Optional.<Integer>absent(),
-            Optional.<String>absent(), Optional.<String>absent(), Optional.<String>absent(),
-            null, isEvolutionEnabled, destinationTableMeta,
-            new HashMap<String, String>());
+            Optional.<String>absent(), Optional.<String>absent(), Optional.<String>absent(), null, isEvolutionEnabled,
+            destinationTableMeta, new HashMap<String, String>());
   }
 
   /***
@@ -217,6 +268,7 @@ public class HiveAvroORCQueryGeneratorTest {
   @Test
   public void testDropPartitions() throws Exception {
 
+    // Test multiple partition-spec drop method
     List<Map<String, String>> partitionDMLInfos = Lists.newArrayList();
     partitionDMLInfos.add(ImmutableMap.of("datepartition", "2016-01-01", "sizepartition", "10"));
     partitionDMLInfos.add(ImmutableMap.of("datepartition", "2016-01-02", "sizepartition", "20"));
@@ -234,6 +286,15 @@ public class HiveAvroORCQueryGeneratorTest {
     // Check empty partitions
     Assert.assertEquals(HiveAvroORCQueryGenerator.generateDropPartitionsDDL("db1", "table1",
         Collections.<Map<String, String>>emptyList()), Collections.emptyList());
+
+    // Test single partition-spec drop method
+    Map<String, String> partitionsDMLInfo = ImmutableMap.of("datepartition", "2016-01-01", "sizepartition", "10");
+    ddl = HiveAvroORCQueryGenerator.generateDropPartitionsDDL("db1", "table1", partitionsDMLInfo);
+
+    Assert.assertEquals(ddl.size(), 2);
+    Assert.assertEquals(ddl.get(0), "USE db1\n");
+    Assert.assertEquals(ddl.get(1),
+        "ALTER TABLE table1 DROP IF EXISTS PARTITION (`datepartition`='2016-01-01', `sizepartition`='10') ");
   }
 
   @Test
@@ -300,4 +361,39 @@ public class HiveAvroORCQueryGeneratorTest {
     // Check for in-compatible types
     HiveAvroORCQueryGenerator.isTypeEvolved("boolean", "int");
   }
-}
+
+  @Test
+  public void testCreateOrUpdateViewDDL() throws Exception {
+    // Check if two queries for Create and Update View have been generated
+    List<String> ddls = HiveAvroORCQueryGenerator.generateCreateOrUpdateViewDDL("db1", "tbl1", "db2" ,"view1", true);
+
+    Assert.assertEquals(ddls.size(), 2, "Two queries for Create and Update should have been generated");
+    Assert.assertEquals(ddls.get(0), "CREATE VIEW IF NOT EXISTS `db2`.`view1` AS SELECT * FROM `db1`.`tbl1`");
+    Assert.assertEquals(ddls.get(1), "ALTER VIEW `db2`.`view1` AS SELECT * FROM `db1`.`tbl1`");
+
+    // Check if two queries for Create and Update View have been generated
+    ddls = HiveAvroORCQueryGenerator.generateCreateOrUpdateViewDDL("db1", "tbl1", "db2" ,"view1", false);
+
+    Assert.assertEquals(ddls.size(), 1, "One query for Create only should have been generated");
+    Assert.assertEquals(ddls.get(0), "CREATE VIEW IF NOT EXISTS `db2`.`view1` AS SELECT * FROM `db1`.`tbl1`");
+  }
+
+  @Test
+  public void testAlterTableOrPartitionStorageFormatDDL() throws Exception {
+    Map<String, String> partitions = ImmutableMap.of("datepartition", "2016-01-01", "sizepartition", "10");
+
+    // For Partition
+    List<String> ddls = HiveAvroORCQueryGenerator
+        .generateAlterTableOrPartitionStorageFormatDDL("db1", "table1", Optional.of(partitions), "orc");
+    Assert.assertEquals(ddls.size(), 2, "Two queries to set DB and Alter table should have been created");
+    Assert.assertEquals(ddls.get(0), "USE db1\n");
+    Assert.assertEquals(ddls.get(1), "ALTER TABLE table1 PARTITION (`datepartition`='2016-01-01', `sizepartition`='10')  SET FILEFORMAT orc");
+
+    // For Table
+    ddls = HiveAvroORCQueryGenerator
+        .generateAlterTableOrPartitionStorageFormatDDL("db1", "table1", Optional.<Map<String,String>>absent(), "orc");
+    Assert.assertEquals(ddls.size(), 2, "Two queries to set DB and Alter table should have been created");
+    Assert.assertEquals(ddls.get(0), "USE db1\n");
+    Assert.assertEquals(ddls.get(1), "ALTER TABLE table1  SET FILEFORMAT orc");
+  }
+ }

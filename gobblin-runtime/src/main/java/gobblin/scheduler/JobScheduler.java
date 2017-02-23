@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package gobblin.scheduler;
@@ -28,6 +33,7 @@ import org.apache.hadoop.fs.Path;
 
 import org.quartz.CronScheduleBuilder;
 import org.quartz.DisallowConcurrentExecution;
+import org.quartz.InterruptableJob;
 import org.quartz.Job;
 import org.quartz.JobBuilder;
 import org.quartz.JobDataMap;
@@ -39,6 +45,7 @@ import org.quartz.Scheduler;
 import org.quartz.SchedulerException;
 import org.quartz.Trigger;
 import org.quartz.TriggerBuilder;
+import org.quartz.UnableToInterruptJobException;
 import org.quartz.impl.StdSchedulerFactory;
 
 import org.slf4j.Logger;
@@ -52,6 +59,8 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.io.Closer;
 import com.google.common.util.concurrent.AbstractIdleService;
+
+import lombok.extern.slf4j.Slf4j;
 
 import gobblin.configuration.ConfigurationKeys;
 import gobblin.runtime.JobException;
@@ -163,9 +172,6 @@ public class JobScheduler extends AbstractIdleService {
       throws Exception {
     LOG.info("Starting the job scheduler");
 
-    Preconditions.checkState(this.listener != null,
-        String.format("Property %s was not defined.", ConfigurationKeys.JOB_CONFIG_FILE_GENERAL_PATH_KEY));
-
     try {
       this.scheduler.awaitRunning(1, TimeUnit.SECONDS);
     } catch (TimeoutException | IllegalStateException exc) {
@@ -173,12 +179,8 @@ public class JobScheduler extends AbstractIdleService {
     }
 
     // Note: This should not be mandatory, gobblin-cluster modes have their own job configuration managers
-    if (this.properties.containsKey(ConfigurationKeys.JOB_CONFIG_FILE_DIR_KEY)) {
-
-      Preconditions.checkArgument(
-          this.properties.containsKey(ConfigurationKeys.JOB_CONFIG_FILE_DIR_KEY) || this.properties.containsKey(
-              ConfigurationKeys.JOB_CONFIG_FILE_GENERAL_PATH_KEY),
-          "Error in configuration file: Please check your .pull file");
+    if (this.properties.containsKey(ConfigurationKeys.JOB_CONFIG_FILE_DIR_KEY)
+        || this.properties.containsKey(ConfigurationKeys.JOB_CONFIG_FILE_GENERAL_PATH_KEY)) {
 
       if (this.properties.containsKey(ConfigurationKeys.JOB_CONFIG_FILE_DIR_KEY) && !this.properties.containsKey(
           ConfigurationKeys.JOB_CONFIG_FILE_GENERAL_PATH_KEY)) {
@@ -199,6 +201,12 @@ public class JobScheduler extends AbstractIdleService {
         ConfigurationKeys.JOB_CONFIG_FILE_DIR_KEY)) {
       this.pathAlterationDetector.stop(1000);
     }
+
+    List<JobExecutionContext> currentExecutions = this.scheduler.getScheduler().getCurrentlyExecutingJobs();
+    for (JobExecutionContext jobExecutionContext : currentExecutions) {
+      this.scheduler.getScheduler().interrupt(jobExecutionContext.getFireInstanceId());
+    }
+
 
     ExecutorsUtils.shutdownExecutorService(this.jobExecutor, Optional.of(LOG));
   }
@@ -223,6 +231,14 @@ public class JobScheduler extends AbstractIdleService {
     } catch (JobException | RuntimeException exc) {
       LOG.error("Could not schedule job " + jobProps.getProperty(ConfigurationKeys.JOB_NAME_KEY, "Unknown job"), exc);
     }
+  }
+
+  /**
+   * Submit a runnable to the {@link ExecutorService} of this {@link JobScheduler}.
+   * @param runnable the runnable to submit to the job executor
+   */
+  public void submitRunnableToExecutor(Runnable runnable) {
+    this.jobExecutor.execute(runnable);
   }
 
   /**
@@ -461,7 +477,8 @@ public class JobScheduler extends AbstractIdleService {
    * A Gobblin job to be scheduled.
    */
   @DisallowConcurrentExecution
-  public static class GobblinJob implements Job {
+  @Slf4j
+  public static class GobblinJob implements InterruptableJob {
 
     @Override
     public void execute(JobExecutionContext context)
@@ -477,6 +494,13 @@ public class JobScheduler extends AbstractIdleService {
       } catch (Throwable t) {
         throw new JobExecutionException(t);
       }
+    }
+
+    @Override
+    public void interrupt()
+        throws UnableToInterruptJobException {
+      log.info("Job was interrupted");
+
     }
   }
 

@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package gobblin.util;
@@ -18,6 +23,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
+
+import lombok.extern.slf4j.Slf4j;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -42,6 +49,7 @@ import gobblin.source.workunit.WorkUnit;
  *
  * @author Yinan Li
  */
+@Slf4j
 public class JobLauncherUtils {
 
   // A cache for proxied FileSystems by owners
@@ -130,7 +138,7 @@ public class JobLauncherUtils {
         "Missing required property " + ConfigurationKeys.WRITER_OUTPUT_DIR);
 
     String writerFsUri = state.getProp(ConfigurationKeys.WRITER_FILE_SYSTEM_URI, ConfigurationKeys.LOCAL_FS_URI);
-    FileSystem fs = getFsWithProxy(state, writerFsUri);
+    FileSystem fs = getFsWithProxy(state, writerFsUri, WriterUtils.getFsConfiguration(state));
 
     Path jobStagingPath = new Path(state.getProp(ConfigurationKeys.WRITER_STAGING_DIR));
     logger.info("Cleaning up staging directory " + jobStagingPath);
@@ -164,7 +172,7 @@ public class JobLauncherUtils {
       String writerFsUri = state.getProp(
           ForkOperatorUtils.getPropertyNameForBranch(ConfigurationKeys.WRITER_FILE_SYSTEM_URI, numBranches, branchId),
           ConfigurationKeys.LOCAL_FS_URI);
-      FileSystem fs = getFsWithProxy(state, writerFsUri);
+      FileSystem fs = getFsWithProxy(state, writerFsUri, WriterUtils.getFsConfiguration(state));
 
       Path stagingPath = WriterUtils.getWriterStagingDir(state, numBranches, branchId);
       if (fs.exists(stagingPath)) {
@@ -205,7 +213,7 @@ public class JobLauncherUtils {
       String writerFsUri = state.getProp(
           ForkOperatorUtils.getPropertyNameForBranch(ConfigurationKeys.WRITER_FILE_SYSTEM_URI, numBranches, branchId),
           ConfigurationKeys.LOCAL_FS_URI);
-      FileSystem fs = getFsWithProxy(state, writerFsUri);
+      FileSystem fs = getFsWithProxy(state, writerFsUri, WriterUtils.getFsConfiguration(state));
       ParallelRunner parallelRunner = getParallelRunner(fs, closer, parallelRunnerThreads, parallelRunners);
 
       Path stagingPath = WriterUtils.getWriterStagingDir(state, numBranches, branchId);
@@ -222,10 +230,16 @@ public class JobLauncherUtils {
     }
   }
 
-  private static FileSystem getFsWithProxy(final State state, final String writerFsUri) throws IOException {
+  /**
+   * @param state
+   * @param fsUri
+   * @return
+   * @throws IOException
+   */
+  private static FileSystem getFsWithProxy(final State state, final String fsUri, final Configuration conf) throws IOException {
     if (!state.getPropAsBoolean(ConfigurationKeys.SHOULD_FS_PROXY_AS_USER,
         ConfigurationKeys.DEFAULT_SHOULD_FS_PROXY_AS_USER)) {
-      return FileSystem.get(URI.create(writerFsUri), new Configuration());
+      return FileSystem.get(URI.create(fsUri), conf);
     }
 
     Preconditions.checkArgument(!Strings.isNullOrEmpty(state.getProp(ConfigurationKeys.FS_PROXY_AS_USER_NAME)),
@@ -239,7 +253,7 @@ public class JobLauncherUtils {
         public FileSystem call()
             throws Exception {
           return new ProxiedFileSystemWrapper().getProxiedFileSystem(state, ProxiedFileSystemWrapper.AuthType.KEYTAB,
-              state.getProp(ConfigurationKeys.SUPER_USER_KEY_TAB_LOCATION), writerFsUri);
+              state.getProp(ConfigurationKeys.SUPER_USER_KEY_TAB_LOCATION), fsUri, conf);
         }
 
       });

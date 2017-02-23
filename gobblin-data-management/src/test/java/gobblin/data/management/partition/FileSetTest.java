@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package gobblin.data.management.partition;
@@ -37,6 +42,11 @@ public class FileSetTest {
     public FileStatus getFileStatus() {
       return this.fileStatus;
     }
+
+    @Override
+    public FileStatus getOrigin() {
+      return this.fileStatus;
+    }
   }
 
   @Test
@@ -53,10 +63,11 @@ public class FileSetTest {
     Assert.assertEquals(fileSet.getName(), "test");
     Assert.assertEquals(fileSet.getFiles().get(0).getFileStatus().getPath().toString(), file1);
     Assert.assertEquals(fileSet.getFiles().get(1).getFileStatus().getPath().toString(), file2);
-
+    Assert.assertEquals(fileSet.getTotalEntities(), 2);
+    Assert.assertEquals(fileSet.getTotalSizeInBytes(), 20);
   }
 
   private static FileStatus createFileStatus(String path) {
-    return new FileStatus(0, false, 0, 0, 0, new Path(path));
+    return new FileStatus(10, false, 0, 0, 0, new Path(path));
   }
 }

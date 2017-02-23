@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package gobblin.util.test;
 
@@ -19,6 +24,7 @@ import java.util.List;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.joda.time.DateTimeUtils;
 import org.joda.time.DateTimeUtils.MillisProvider;
 import org.joda.time.DateTimeZone;
@@ -87,9 +93,11 @@ public class RetentionTestDataGenerator {
   private static final String TEST_DATA_CREATE_KEY = DATA_GENERATOR_PREFIX + "create";
   private static final String TEST_DATA_VALIDATE_RETAINED_KEY = DATA_GENERATOR_PREFIX + "validate.retained";
   private static final String TEST_DATA_VALIDATE_DELETED_KEY = DATA_GENERATOR_PREFIX + "validate.deleted";
+  private static final String TEST_DATA_VALIDATE_PERMISSIONS_KEY = DATA_GENERATOR_PREFIX + "validate.permissions";
 
   private static final String TEST_DATA_PATH_LOCAL_KEY = "path";
   private static final String TEST_DATA_MOD_TIME_LOCAL_KEY = "modTime";
+  private static final String TEST_DATA_PERMISSIONS_KEY = "permission";
 
   private static final DateTimeFormatter FORMATTER = DateTimeFormat.
       forPattern("MM/dd/yyyy HH:mm:ss").withZone(DateTimeZone.forID(ConfigurationKeys.PST_TIMEZONE_NAME));
@@ -147,6 +155,9 @@ public class RetentionTestDataGenerator {
           throw new IOException(String.format("Unable to set the last modified time for file %s!", file));
         }
       }
+      if (fileToCreate.hasPath(TEST_DATA_PERMISSIONS_KEY)) {
+        this.fs.setPermission(fullFilePath, new FsPermission(fileToCreate.getString(TEST_DATA_PERMISSIONS_KEY)));
+      }
     }
   }
 
@@ -171,6 +182,19 @@ public class RetentionTestDataGenerator {
           new Path(testTempDirPath, PathUtils.withoutLeadingSeparator(new Path(retainedConfig
               .getString(TEST_DATA_PATH_LOCAL_KEY))));
       Assert.assertFalse(this.fs.exists(fullFilePath), String.format("%s should be deleted", fullFilePath.toString()));
+    }
+
+    // Validate permissions
+    if (setupConfig.hasPath(TEST_DATA_VALIDATE_PERMISSIONS_KEY)) {
+      List<? extends Config> permissionsConfigs = setupConfig.getConfigList(TEST_DATA_VALIDATE_PERMISSIONS_KEY);
+      for (Config permissionsConfig : permissionsConfigs) {
+        Path fullFilePath =
+            new Path(testTempDirPath, PathUtils.withoutLeadingSeparator(new Path(permissionsConfig
+                .getString(TEST_DATA_PATH_LOCAL_KEY))));
+        Assert.assertEquals(this.fs.getFileStatus(fullFilePath).getPermission(),
+            new FsPermission(permissionsConfig.getString(TEST_DATA_PERMISSIONS_KEY)),
+            String.format("Permissions check failed for %s", fullFilePath));
+      }
     }
 
     this.cleanup();

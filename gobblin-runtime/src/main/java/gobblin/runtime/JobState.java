@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package gobblin.runtime;
@@ -16,6 +21,7 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.io.StringWriter;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -108,6 +114,10 @@ public class JobState extends SourceState {
     public boolean isFailure() {
       return this.equals(FAILED);
     }
+
+    public boolean isRunningOrDone() {
+      return isDone() || this.equals(RUNNING);
+    }
   }
 
   private String jobName;
@@ -118,6 +128,8 @@ public class JobState extends SourceState {
   private RunningState state = RunningState.PENDING;
   private int taskCount = 0;
   private final Map<String, TaskState> taskStates = Maps.newLinkedHashMap();
+  // Skipped task states shouldn't be exposed to publisher, but they need to be in JobState and DatasetState so that they can be written to StateStore.
+  private final Map<String, TaskState> skippedTaskStates = Maps.newLinkedHashMap();
 
   // Necessary for serialization/deserialization
   public JobState() {}
@@ -302,6 +314,31 @@ public class JobState extends SourceState {
     this.taskStates.put(taskState.getTaskId(), taskState);
   }
 
+  public void addSkippedTaskState(TaskState taskState) {
+    this.skippedTaskStates.put(taskState.getTaskId(), taskState);
+  }
+
+  public void removeTaskState(TaskState taskState) {
+    this.taskStates.remove(taskState.getTaskId());
+    this.taskCount--;
+  }
+
+  /**
+   * Filter the task states corresponding to the skipped work units and add it to the skippedTaskStates
+   */
+  public void filterSkippedTaskStates() {
+    List<TaskState> skippedTaskStates = new ArrayList<>();
+    for (TaskState taskState : this.taskStates.values()) {
+      if (taskState.getWorkingState() == WorkUnitState.WorkingState.SKIPPED) {
+        skippedTaskStates.add(taskState);
+      }
+    }
+    for (TaskState taskState : skippedTaskStates) {
+      removeTaskState(taskState);
+      addSkippedTaskState(taskState);
+    }
+  }
+
   /**
    * Add a collection of {@link TaskState}s.
    *
@@ -310,6 +347,12 @@ public class JobState extends SourceState {
   public void addTaskStates(Collection<TaskState> taskStates) {
     for (TaskState taskState : taskStates) {
       this.taskStates.put(taskState.getTaskId(), taskState);
+    }
+  }
+
+  public void addSkippedTaskStates(Collection<TaskState> taskStates) {
+    for (TaskState taskState : taskStates) {
+      addSkippedTaskState(taskState);
     }
   }
 
@@ -354,18 +397,28 @@ public class JobState extends SourceState {
     Map<String, DatasetState> datasetStatesByUrns = Maps.newHashMap();
 
     for (TaskState taskState : this.taskStates.values()) {
-      String datasetUrn = taskState.getProp(ConfigurationKeys.DATASET_URN_KEY, ConfigurationKeys.DEFAULT_DATASET_URN);
-      if (!datasetStatesByUrns.containsKey(datasetUrn)) {
-        DatasetState datasetState = newDatasetState(false);
-        datasetState.setDatasetUrn(datasetUrn);
-        datasetStatesByUrns.put(datasetUrn, datasetState);
-      }
+      String datasetUrn = createDatasetUrn(datasetStatesByUrns, taskState);
 
       datasetStatesByUrns.get(datasetUrn).incrementTaskCount();
       datasetStatesByUrns.get(datasetUrn).addTaskState(taskState);
     }
 
+    for (TaskState taskState : this.skippedTaskStates.values()) {
+      String datasetUrn = createDatasetUrn(datasetStatesByUrns, taskState);
+      datasetStatesByUrns.get(datasetUrn).addSkippedTaskState(taskState);
+    }
+
     return ImmutableMap.copyOf(datasetStatesByUrns);
+  }
+
+  private String createDatasetUrn(Map<String, DatasetState> datasetStatesByUrns, TaskState taskState) {
+    String datasetUrn = taskState.getProp(ConfigurationKeys.DATASET_URN_KEY, ConfigurationKeys.DEFAULT_DATASET_URN);
+    if (!datasetStatesByUrns.containsKey(datasetUrn)) {
+      DatasetState datasetState = newDatasetState(false);
+      datasetState.setDatasetUrn(datasetUrn);
+      datasetStatesByUrns.put(datasetUrn, datasetState);
+    }
+    return datasetUrn;
   }
 
   /**
@@ -450,8 +503,11 @@ public class JobState extends SourceState {
     text.write(out);
     out.writeInt(this.taskCount);
     if (writeTasks) {
-      out.writeInt(this.taskStates.size());
+      out.writeInt(this.taskStates.size() + this.skippedTaskStates.size());
       for (TaskState taskState : this.taskStates.values()) {
+        taskState.write(out);
+      }
+      for (TaskState taskState : this.skippedTaskStates.values()) {
         taskState.write(out);
       }
     } else {
@@ -481,17 +537,24 @@ public class JobState extends SourceState {
     for (TaskState taskState : this.taskStates.values()) {
       taskState.toJson(jsonWriter, keepConfig);
     }
+    for (TaskState taskState : this.skippedTaskStates.values()) {
+      taskState.toJson(jsonWriter, keepConfig);
+    }
     jsonWriter.endArray();
 
     if (keepConfig) {
       jsonWriter.name("properties");
-      jsonWriter.beginObject();
-      for (String key : this.getPropertyNames()) {
-        jsonWriter.name(key).value(this.getProp(key));
-      }
-      jsonWriter.endObject();
+      propsToJson(jsonWriter);
     }
 
+    jsonWriter.endObject();
+  }
+
+  protected void propsToJson(JsonWriter jsonWriter) throws IOException {
+    jsonWriter.beginObject();
+    for (String key : this.getPropertyNames()) {
+      jsonWriter.name(key).value(this.getProp(key));
+    }
     jsonWriter.endObject();
   }
 
@@ -621,6 +684,7 @@ public class JobState extends SourceState {
       datasetState.setState(this.state);
       datasetState.setTaskCount(this.taskCount);
       datasetState.addTaskStates(this.taskStates.values());
+      datasetState.addSkippedTaskStates(this.skippedTaskStates.values());
     }
     return datasetState;
   }
@@ -671,6 +735,14 @@ public class JobState extends SourceState {
 
     public int getJobFailures() {
       return Integer.parseInt(super.getProp(ConfigurationKeys.JOB_FAILURES_KEY));
+    }
+
+    @Override
+    protected void propsToJson(JsonWriter jsonWriter) throws IOException {
+      jsonWriter.beginObject();
+      jsonWriter.name(ConfigurationKeys.DATASET_URN_KEY).value(getDatasetUrn());
+      jsonWriter.name(ConfigurationKeys.JOB_FAILURES_KEY).value(getJobFailures());
+      jsonWriter.endObject();
     }
 
     @Override

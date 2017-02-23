@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2015-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package gobblin.data.management.retention.profile;
 
@@ -25,6 +30,7 @@ import org.apache.commons.lang3.reflect.ConstructorUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 
+import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
@@ -54,6 +60,8 @@ import gobblin.util.reflection.GobblinConstructorUtils;
  */
 @Slf4j
 public abstract class MultiDatasetFinder implements DatasetsFinder<Dataset> {
+  private static final Splitter TAGS_SPLITTER = Splitter.on(",").omitEmptyStrings().trimResults();
+
   protected abstract String datasetFinderClassKey();
 
   protected abstract String datasetFinderImportedByKey();
@@ -61,6 +69,7 @@ public abstract class MultiDatasetFinder implements DatasetsFinder<Dataset> {
   List<DatasetsFinder<Dataset>> datasetFinders;
 
   protected final Properties jobProps;
+
   @SuppressWarnings({ "rawtypes", "unchecked" })
   public MultiDatasetFinder(FileSystem fs, Properties jobProps) {
     this.jobProps = jobProps;
@@ -69,9 +78,9 @@ public abstract class MultiDatasetFinder implements DatasetsFinder<Dataset> {
 
       if (jobProps.containsKey(datasetFinderClassKey())) {
         try {
+          log.info(String.format("Instantiating datasetfinder %s ", jobProps.getProperty(datasetFinderClassKey())));
           this.datasetFinders.add((DatasetsFinder) ConstructorUtils.invokeConstructor(
               Class.forName(jobProps.getProperty(datasetFinderClassKey())), fs, jobProps));
-          log.info(String.format("Instantiated datasetfinder %s ", jobProps.getProperty(datasetFinderClassKey())));
         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException | InstantiationException
             | ClassNotFoundException e) {
           log.error(
@@ -79,10 +88,17 @@ public abstract class MultiDatasetFinder implements DatasetsFinder<Dataset> {
                   jobProps.getProperty(datasetFinderClassKey())), e);
           Throwables.propagate(e);
         }
-      } else {
+      } else if (jobProps.containsKey(datasetFinderImportedByKey())) {
+
+        log.info("Instatiating dataset finders using tag " + jobProps.getProperty(datasetFinderImportedByKey()));
+
         ConfigClient client = ConfigClientCache.getClient(VersionStabilityPolicy.STRONG_LOCAL_STABILITY);
-        Collection<URI> importedBys =
-            client.getImportedBy(new URI(jobProps.getProperty(datasetFinderImportedByKey())), false);
+        Collection<URI> importedBys = Lists.newArrayList();
+
+        for (String tag : TAGS_SPLITTER.split(jobProps.getProperty(datasetFinderImportedByKey()))) {
+          log.info("Looking for datasets that import tag " + tag);
+          importedBys.addAll(client.getImportedBy(new URI(tag), false));
+        }
 
         for (URI importedBy : importedBys) {
           Config datasetClassConfig = client.getConfig(importedBy);
@@ -100,6 +116,10 @@ public abstract class MultiDatasetFinder implements DatasetsFinder<Dataset> {
             Throwables.propagate(e);
           }
         }
+      } else {
+        log.warn(String.format(
+            "NO DATASET_FINDERS FOUND. Either specify dataset finder class at %s or specify the imported tags at %s",
+            datasetFinderClassKey(), datasetFinderImportedByKey()));
       }
 
     } catch (IllegalArgumentException | VersionDoesNotExistException | ConfigStoreFactoryDoesNotExistsException

@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package gobblin.compaction.mapreduce;
@@ -30,7 +35,9 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+import java.lang.reflect.InvocationTargetException;
 
+import org.joda.time.DateTime;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -38,10 +45,11 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.Job;
-
+import org.joda.time.DateTimeZone;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.base.Functions;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
@@ -56,6 +64,8 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import gobblin.compaction.Compactor;
+import gobblin.compaction.listeners.CompactorCompletionListener;
+import gobblin.compaction.listeners.CompactorCompletionListenerFactory;
 import gobblin.compaction.listeners.CompactorListener;
 import gobblin.compaction.dataset.Dataset;
 import gobblin.compaction.dataset.DatasetsFinder;
@@ -68,14 +78,14 @@ import gobblin.configuration.State;
 import gobblin.metrics.GobblinMetrics;
 import gobblin.metrics.Tag;
 import gobblin.metrics.event.EventSubmitter;
-import gobblin.metrics.event.sla.SlaEventSubmitter;
+import gobblin.util.ClassAliasResolver;
 import gobblin.util.DatasetFilterUtils;
 import gobblin.util.ExecutorsUtils;
 import gobblin.util.HadoopUtils;
 import gobblin.util.ClusterNameTags;
 import gobblin.util.recordcount.CompactionRecordCountProvider;
 import gobblin.util.recordcount.IngestionRecordCountProvider;
-
+import gobblin.util.reflection.GobblinConstructorUtils;
 
 /**
  * MapReduce-based {@link gobblin.compaction.Compactor}. Compaction will run on each qualified {@link Dataset}
@@ -154,6 +164,29 @@ public class MRCompactor implements Compactor {
       COMPACTION_PREFIX + "latedata.threshold.for.recompact.per.topic";
   public static final double DEFAULT_COMPACTION_LATEDATA_THRESHOLD_FOR_RECOMPACT_PER_DATASET = 1.0;
 
+  // The threshold of new (late) files that will trigger compaction per dataset.
+  // The trigger is based on the file numbers in the late output directory
+  public static final String COMPACTION_LATEDATA_THRESHOLD_FILE_NUM =
+      COMPACTION_PREFIX + "latedata.threshold.file.num";
+  public static final int DEFAULT_COMPACTION_LATEDATA_THRESHOLD_FILE_NUM = 1000;
+
+  // The threshold of new (late) files that will trigger compaction per dataset.
+  // The trigger is based on how long the file has been in the late output directory.
+  public static final String COMPACTION_LATEDATA_THRESHOLD_DURATION =
+      COMPACTION_PREFIX + "latedata.threshold.duration";
+  public static final String DEFAULT_COMPACTION_LATEDATA_THRESHOLD_DURATION = "24h";
+
+
+  public static final String COMPACTION_RECOMPACT_CONDITION = COMPACTION_PREFIX + "recompact.condition";
+  public static final String DEFAULT_COMPACTION_RECOMPACT_CONDITION = "RecompactBasedOnRatio";
+
+  public static final String COMPACTION_RECOMPACT_COMBINE_CONDITIONS = COMPACTION_PREFIX + "recompact.combine.conditions";
+  public static final String COMPACTION_RECOMPACT_COMBINE_CONDITIONS_OPERATION = COMPACTION_PREFIX + "recompact.combine.conditions.operation";
+  public static final String DEFAULT_COMPACTION_RECOMPACT_COMBINE_CONDITIONS_OPERATION = "or";
+
+  public static final String COMPACTION_COMPLETE_LISTERNER = COMPACTION_PREFIX + "complete.listener";
+  public static final String DEFAULT_COMPACTION_COMPLETE_LISTERNER = "SimpleCompactorCompletionHook";
+
   // Whether the input data for the compaction is deduplicated.
   public static final String COMPACTION_INPUT_DEDUPLICATED = COMPACTION_PREFIX + "input.deduplicated";
   public static final boolean DEFAULT_COMPACTION_INPUT_DEDUPLICATED = false;
@@ -166,7 +199,9 @@ public class MRCompactor implements Compactor {
       COMPACTION_PREFIX + "completeness.verification.";
 
   public static final String COMPACTION_RECOMPACT_FROM_DEST_PATHS = COMPACTION_PREFIX + "recompact.from.dest.paths";
+  public static final String COMPACTION_RECOMPACT_ALL_DATA = COMPACTION_PREFIX + "recompact.all.data";
   public static final boolean DEFAULT_COMPACTION_RECOMPACT_FROM_DEST_PATHS = false;
+  public static final boolean DEFAULT_COMPACTION_RECOMPACT_ALL_DATA = true;
 
   /**
    * Configuration properties related to data completeness verification.
@@ -226,16 +261,18 @@ public class MRCompactor implements Compactor {
   private final GobblinMetrics gobblinMetrics;
   private final EventSubmitter eventSubmitter;
   private final Optional<CompactorListener> compactorListener;
-
+  private final DateTime initilizeTime;
   private final long dataVerifTimeoutMinutes;
   private final long compactionTimeoutMinutes;
   private final boolean shouldVerifDataCompl;
   private final boolean shouldPublishDataIfCannotVerifyCompl;
+  private final CompactorCompletionListener compactionCompleteListener;
 
   public MRCompactor(Properties props, List<? extends Tag<?>> tags, Optional<CompactorListener> compactorListener)
       throws IOException {
     this.state = new State();
     this.state.addAll(props);
+    this.initilizeTime = getCurrentTime();
     this.tags = tags;
     this.conf = HadoopUtils.getConfFromState(this.state);
     this.tmpOutputDir = getTmpOutputDir();
@@ -250,14 +287,18 @@ public class MRCompactor implements Compactor {
         GobblinMetrics.get(this.state.getProp(ConfigurationKeys.JOB_NAME_KEY)).getMetricContext(),
         MRCompactor.COMPACTION_TRACKING_EVENTS_NAMESPACE).build();
     this.compactorListener = compactorListener;
-
     this.dataVerifTimeoutMinutes = getDataVerifTimeoutMinutes();
     this.compactionTimeoutMinutes = getCompactionTimeoutMinutes();
     this.shouldVerifDataCompl = shouldVerifyDataCompleteness();
+    this.compactionCompleteListener = getCompactionCompleteListener();
     this.verifier =
         this.shouldVerifDataCompl ? Optional.of(this.closer.register(new DataCompletenessVerifier(this.state)))
             : Optional.<DataCompletenessVerifier> absent();
     this.shouldPublishDataIfCannotVerifyCompl = shouldPublishDataIfCannotVerifyCompl();
+  }
+
+  public DateTime getInitializeTime() {
+    return this.initilizeTime;
   }
 
   private String getTmpOutputDir() {
@@ -280,6 +321,12 @@ public class MRCompactor implements Compactor {
     } catch (Exception e) {
       throw new RuntimeException("Failed to initiailize DatasetsFinder.", e);
     }
+  }
+
+  private DateTime getCurrentTime () {
+    DateTimeZone timeZone = DateTimeZone
+        .forID(this.state.getProp(MRCompactor.COMPACTION_TIMEZONE, MRCompactor.DEFAULT_COMPACTION_TIMEZONE));
+    return new DateTime (timeZone);
   }
 
   private JobRunnerExecutor createJobExecutor() {
@@ -308,6 +355,7 @@ public class MRCompactor implements Compactor {
       copyDependencyJarsToHdfs();
       processDatasets();
       throwExceptionsIfAnyDatasetCompactionFailed();
+      onCompactionCompletion();
     } catch (Throwable t) {
 
       // This throwable is logged here before propagated. Otherwise, if another throwable is thrown
@@ -323,6 +371,24 @@ public class MRCompactor implements Compactor {
         this.gobblinMetrics.stopMetricsReporting();
       }
     }
+  }
+
+  private CompactorCompletionListener getCompactionCompleteListener () {
+    ClassAliasResolver<CompactorCompletionListenerFactory> classAliasResolver = new ClassAliasResolver<>(CompactorCompletionListenerFactory.class);
+    String listenerName= this.state.getProp(MRCompactor.COMPACTION_COMPLETE_LISTERNER,
+        MRCompactor.DEFAULT_COMPACTION_COMPLETE_LISTERNER);
+    try {
+      CompactorCompletionListenerFactory factory = GobblinConstructorUtils.invokeFirstConstructor(
+          classAliasResolver.resolveClass(listenerName), ImmutableList.of());
+      return factory.createCompactorCompactionListener(this.state);
+    } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException | InstantiationException
+        | ClassNotFoundException e) {
+      throw new IllegalArgumentException(e);
+    }
+  }
+
+  private void onCompactionCompletion() {
+    this.compactionCompleteListener.onCompactionCompletion(this);
   }
 
   /**
@@ -378,8 +444,7 @@ public class MRCompactor implements Compactor {
    * Update datasets based on the results of creating job props for them.
    */
   private List<Dataset> createJobPropsForDataset(Dataset dataset) {
-    LOG.info("Creating compaction jobs for dataset " + dataset + " with priority " + dataset.priority()
-        + " and late data threshold for recompact " + dataset.lateDataThresholdForRecompact());
+    LOG.info("Creating compaction jobs for dataset " + dataset + " with priority " + dataset.priority());
     final MRCompactorJobPropCreator jobPropCreator = getJobPropCreator(dataset);
     List<Dataset> datasetsWithProps;
     try {
@@ -402,6 +467,10 @@ public class MRCompactor implements Compactor {
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
+  }
+
+  public Set<Dataset> getDatasets() {
+    return this.datasets;
   }
 
   private void processCompactionJobs() {
@@ -496,7 +565,7 @@ public class MRCompactor implements Compactor {
           switch (result.status()) {
             case PASSED:
               LOG.info("Completeness verification for dataset " + result.dataset() + " passed.");
-              submitSlaEvent(result.dataset(), "CompletenessVerified");
+              submitVerificationSuccessSlaEvent(result);
               result.dataset().setState(VERIFIED);
               if (jobRunner.isPresent()) {
                 jobRunner.get().proceed();
@@ -505,7 +574,7 @@ public class MRCompactor implements Compactor {
             case FAILED:
               if (shouldGiveUpVerification()) {
                 LOG.info("Completeness verification for dataset " + result.dataset() + " has timed out.");
-                submitSlaEvent(result.dataset(), "CompletenessCannotBeVerified");
+                submitVerificationSuccessSlaEvent(result);
                 result.dataset().setState(GIVEN_UP);
                 result.dataset().addThrowable(new RuntimeException(
                     String.format("Completeness verification for dataset %s failed or timed out.", result.dataset())));
@@ -535,7 +604,7 @@ public class MRCompactor implements Compactor {
         if (shouldGiveUpVerification()) {
           for (Dataset dataset : datasetsToBeVerified) {
             LOG.warn(String.format("Completeness verification for dataset %s has timed out.", dataset));
-            submitSlaEvent(dataset, "CompletenessCannotBeVerified");
+            submitFailureSlaEvent(dataset, CompactionSlaEventHelper.COMPLETION_VERIFICATION_FAILED_EVENT_NAME);
             dataset.setState(GIVEN_UP);
             dataset.addThrowable(new RuntimeException(
                 String.format("Completeness verification for dataset %s failed or timed out.", dataset)));
@@ -686,17 +755,12 @@ public class MRCompactor implements Compactor {
       numDatasetsWithThrowables++;
       for (Throwable t : dataset.throwables()) {
         LOG.error("Error processing dataset " + dataset, t);
-        submitSlaEvent(dataset, "CompactionFailed");
+        submitFailureSlaEvent(dataset, CompactionSlaEventHelper.COMPACTION_FAILED_EVENT_NAME);
       }
     }
     if (numDatasetsWithThrowables > 0) {
       throw new RuntimeException(String.format("Failed to process %d datasets.", numDatasetsWithThrowables));
     }
-  }
-
-  private void submitSlaEvent(Dataset dataset, String eventName) {
-    CompactionSlaEventHelper.populateState(dataset, Optional.<Job> absent(), this.fs);
-    new SlaEventSubmitter(this.eventSubmitter, eventName, dataset.jobProps().getProperties()).submit();
   }
 
   /**
@@ -807,6 +871,32 @@ public class MRCompactor implements Compactor {
 
     private void afterExecuteWithThrowable(MRCompactorJobRunner jobRunner, Throwable t) {
       jobRunner.getDataset().skip(t);
+    }
+  }
+
+  /**
+   * Submit an event when completeness verification is successful
+   */
+  private void submitVerificationSuccessSlaEvent(Results.Result result) {
+    try {
+      CompactionSlaEventHelper.getEventSubmitterBuilder(result.dataset(), Optional.<Job> absent(), this.fs)
+      .eventSubmitter(this.eventSubmitter).eventName(CompactionSlaEventHelper.COMPLETION_VERIFICATION_SUCCESS_EVENT_NAME)
+      .additionalMetadata(Maps.transformValues(result.verificationContext(), Functions.toStringFunction())).build()
+      .submit();
+    } catch (Throwable t) {
+      LOG.warn("Failed to submit verification success event:" + t, t);
+    }
+  }
+
+  /**
+   * Submit a failure sla event
+   */
+  private void submitFailureSlaEvent(Dataset dataset, String eventName) {
+    try {
+      CompactionSlaEventHelper.getEventSubmitterBuilder(dataset, Optional.<Job> absent(), this.fs)
+      .eventSubmitter(this.eventSubmitter).eventName(eventName).build().submit();
+    } catch (Throwable t) {
+      LOG.warn("Failed to submit failure sla event:" + t, t);
     }
   }
 }

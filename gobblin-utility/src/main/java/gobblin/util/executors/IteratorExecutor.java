@@ -1,13 +1,18 @@
 /*
- * Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at  http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed
- * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package gobblin.util.executors;
@@ -23,6 +28,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+
+import org.slf4j.Logger;
 
 import com.google.common.base.Optional;
 import com.google.common.base.Predicate;
@@ -137,6 +144,29 @@ public class IteratorExecutor<T> {
         return input instanceof Either.Left;
       }
     });
+  }
+
+  /**
+   * Log failures in the output of {@link #executeAndGetResults()}.
+   * @param results output of {@link #executeAndGetResults()}
+   * @param useLogger logger to log the messages into.
+   * @param atMost will log at most this many errors.
+   */
+  public static <T> void logFailures(List<Either<T, ExecutionException>> results, Logger useLogger, int atMost) {
+    Logger actualLogger = useLogger == null ? log : useLogger;
+    Iterator<Either<T, ExecutionException>> it = results.iterator();
+    int printed = 0;
+    while (it.hasNext()) {
+      Either<T, ExecutionException> nextResult = it.next();
+      if (nextResult instanceof Either.Right) {
+        ExecutionException exc = ((Either.Right<T, ExecutionException>) nextResult).getRight();
+        actualLogger.error("Iterator executor failure.", exc);
+        printed++;
+        if (printed >= atMost) {
+          return;
+        }
+      }
+    }
   }
 
 }
